@@ -16,3 +16,36 @@ Content-Type: application/json
 ### Who am I?
 GET {{base}}/auth/me
 Authorization: Bearer {{login.response.body.data.accessToken}}
+
+### Refresh
+POST {{base}}/auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "{{login.response.body.data.refreshToken}}" }
+
+### List todos
+GET {{base}}/todos?page=1&limit=20
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+### Create todo
+# @name createTodo
+POST {{base}}/todos
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{ "title": "Complete the lab" }
+
+### Get todo
+GET {{base}}/todos/{{createTodo.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+### Update todo
+PATCH {{base}}/todos/{{createTodo.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{ "completed": true }
+
+### Delete todo
+DELETE {{base}}/todos/{{createTodo.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}

@@ -142,7 +142,7 @@ Le guide sépare deux responsabilités :
 
 Dans `app.ts`, l’ordre des middlewares est important : `helmet` ajoute des en-têtes de sécurité ; `cors` contrôle les origines navigateur autorisées ; `express.json` lit le corps JSON (avec une limite de 100 Ko) ; `pino-http` journalise les requêtes ; viennent ensuite le contrôle `/health` et les routes. Le middleware de route introuvable puis le gestionnaire d’erreurs sont placés à la fin pour traiter les requêtes qui n’ont pas trouvé de route et les erreurs transmises par les étapes précédentes.
 
-Les fichiers `app.ts` et `server.ts` sont présents. Les routes Auth sont maintenant branchées dans l’application, comme demandé à la fin du labo 1. Les routes Todos restent désactivées jusqu’au labo 2, car leur module n’existe pas encore.
+Les fichiers `app.ts` et `server.ts` sont présents. Les routes Auth sont branchées à la fin du labo 1 ; les routes Todos ont ensuite été ajoutées et branchées dans `app.ts` au labo 2.
 
 ### Erreur `npm run dev` lancée depuis la racine
 
@@ -198,9 +198,96 @@ J’ai comparé le code présent aux étapes 1.5–1.9 du PDF. J’ai corrigé l
 | 17–18 | Inscription, connexion, hachage Argon2id, renouvellement, déconnexion et profil. | Implémenté dans `auth.service.ts`. La réponse de service expose le DTO et les jetons, pas le hash du mot de passe. |
 | 19 | Middleware Bearer et ajout de `userId` au type Express. | Implémenté dans `shared/authenticate.ts` et `src/types/express.d.ts`. Les déclarations mal nommées trouvées pendant la vérification ont été remplacées par le fichier attendu. |
 | 20 | Contrôleurs HTTP qui valident l’entrée, appellent le service et choisissent le statut/réponse. | Implémenté dans `auth.controller.ts`. |
-| 20–21 | Routes register, login, refresh, logout et me ; limiteur sur register/login ; séparation route/contrôleur/service/modèle. | Implémenté dans `auth.routes.ts` et branché sous `/api/v1/auth` dans `app.ts`. Les routes Todo restent en attente du labo 2. |
-| 22 | Requêtes manuelles Register, Login et Who am I. | Exemples présents dans `todo_api/requests.http`. Les réponses HTTP réelles restent à vérifier en lançant l’API et en envoyant ces requêtes. |
+| 20–21 | Routes register, login, refresh, logout et me ; limiteur sur register/login ; séparation route/contrôleur/service/modèle. | Implémenté dans `auth.routes.ts` et branché sous `/api/v1/auth` dans `app.ts`. |
+| 22 | Requêtes manuelles Register, Login et Who am I. | Exemples présents dans `todo_api/requests.http` ; les tests d’intégration couvrent aussi les réponses HTTP et l’authentification. |
 
 À retenir pour une présentation : les routes choisissent l’URL et les gardes ; les contrôleurs traduisent HTTP en appels métier ; les services appliquent les règles sans dépendre de `req`/`res` ; les modèles accèdent à MongoDB. Le mot de passe est haché avec Argon2id. Le JWT d’accès est signé et vérifié sans requête DB, tandis que le refresh token opaque est stocké sous forme de hash et renouvelé à chaque usage.
 
-Vérification effectuée : `npm run typecheck` dans `todo_api` s’est terminé avec succès (`tsc --noEmit`, code de sortie 0). Cela confirme le contrôle TypeScript, mais ne prouve pas que MongoDB est disponible ni que les requêtes HTTP du point de contrôle fonctionnent. Il reste à lancer `npm run dev`, puis à envoyer les requêtes de `requests.http` et vérifier les statuts attendus : inscription 201, e-mail en doublon 409, entrée invalide 422, `/me` sans jeton 401 et avec jeton valide 200.
+Vérifications effectuées : `npm run typecheck` passe et les tests d’intégration exécutent des requêtes à travers l’application et MongoDB. Le point `/health` peut encore être vérifié manuellement en lançant `npm run dev` depuis `todo_api` puis `curl http://localhost:3000/health`.
+
+## Labo 2 : Todos, propriété, tests et sécurité (pages 23–33)
+
+### Rotation des refresh tokens (2.1)
+
+La rotation et la détection de réutilisation étaient déjà dans `token.service.ts` au labo 1. J’ai ajouté la requête Refresh à `requests.http`. Chaque refresh token ne fonctionne qu’une fois ; rejouer un ancien jeton révoque sa famille complète. Pour la démonstration du délai d’accès, règle temporairement `ACCESS_TOKEN_TTL=20s`, reconnecte-toi, attends 20 secondes puis appelle `/auth/me` : le résultat attendu est `401`. Remets ensuite `15m`.
+
+### Modèle, validation et accès Todo (2.2–2.3)
+
+Les nouveaux fichiers `src/modules/todos/todo.model.ts`, `todo.schemas.ts`, `todo.service.ts`, `todo.controller.ts` et `todo.routes.ts` implémentent le CRUD :
+
+- Le modèle persiste titre, état, échéance, propriétaire et timestamps ; son index composé accélère les listes d’un propriétaire triées par date.
+- Les schémas Zod valident les identifiants Mongo, les entrées, les mises à jour partielles et la pagination. Les champs inconnus sont éliminés ; le client ne choisit donc jamais `owner`.
+- Le service reçoit `ownerId` depuis le middleware d’authentification, jamais du corps client. Toutes les lectures, modifications et suppressions filtrent par `_id` **et** propriétaire. Un Todo d’un autre compte est traité comme inexistant (404), ce qui protège contre BOLA.
+- Le contrôleur fait le lien entre HTTP, validation, service et réponses. La liste renvoie `data` et des métadonnées de pagination ; la création répond 201 et la suppression 204.
+- Le routeur exige `authenticate` avant toutes les routes Todo. Il est maintenant monté sous `/api/v1/todos` dans `app.ts`.
+
+À expliquer à l’oral : l’authentification identifie l’utilisateur, mais l’autorisation vient du filtre `owner` dans chaque requête de base. C’est ce filtre qui empêche un utilisateur connecté de consulter ou modifier les éléments d’un autre.
+
+### Tests d’intégration et configuration isolée (2.4)
+
+J’ai ajouté `.env.test`, `test/helpers.ts`, `test/todos.test.ts` et `test/auth.test.ts`. L’environnement de test pointe vers `todo_test` sur le port Docker `27018`, séparé de la base de développement `todo_dev`. Le helper refuse une URI qui ne termine pas par `_test`, vide la base avant chaque cas et reconstruit les index. Supertest envoie les requêtes à la vraie application sans ouvrir de port réseau ; `node:test` vérifie les réponses HTTP.
+
+Les tests Todo couvrent l’authentification requise, le CRUD, la validation, la pagination, les filtres et l’isolation entre comptes. Les tests Auth couvrent l’absence de hash dans la réponse, les e-mails en double, le message de connexion uniforme et la rotation/révocation des refresh tokens. `.env.test` est ignoré par Git.
+
+`npm test` a été exécuté contre MongoDB Docker (base dédiée `todo_test`) : les 9 tests d’intégration passent. Une première tentative depuis l’environnement isolé ne pouvait pas joindre MongoDB ; l’exécution autorisée avec accès à Docker a réussi. `npm run typecheck` passe également (`tsc --noEmit`, code de sortie 0).
+
+### Revue de sécurité à connaître (2.5)
+
+| Risque | Protection dans le projet |
+| --- | --- |
+| Accès aux données d’un autre utilisateur (BOLA) | Chaque requête Todo est filtrée par l’identifiant issu du JWT vérifié. |
+| Authentification faible | Argon2id, message d’échec de connexion uniforme, limiteur, access token court et refresh token tournant stocké sous forme de hash. |
+| Modification/exposition de propriétés sensibles | Zod filtre les champs non déclarés et les fonctions DTO décident des champs renvoyés. |
+| Consommation excessive | Corps JSON limité à 100 Ko, page limitée à 100 éléments, limiteur sur inscription/connexion. |
+| Mauvaise configuration | Helmet, suppression de `X-Powered-By`, secrets configurés dans l’environnement et validés au démarrage, erreurs internes non exposées. |
+
+Le guide précise que HTTPS, un CORS limité en production, la vérification d’e-mail, la réinitialisation de mot de passe et la supervision restent nécessaires pour un vrai déploiement. Ce sont des limites connues, pas des fonctionnalités fournies par ce labo.
+
+## Labo 3 : architecture Flutter, réseau et authentification (pages 34–61)
+
+Le projet Flutter `todo_app` a été créé avec les plateformes Android, iOS et Web. Les dépendances du guide ont été ajoutées : `flutter_bloc`, `bloc_concurrency`, `equatable`, `dio`, `get_it`, `go_router`, `flutter_secure_storage`, ainsi que `bloc_test` et `mocktail` pour les tests.
+
+### Code ajouté et pourquoi il existe
+
+- `core/config/app_config.dart` centralise l’URL API ; Android Emulator utilise `10.0.2.2`, tandis qu’on peut remplacer l’URL avec `--dart-define`.
+- `core/error/failure.dart` décrit les erreurs dans les termes de l’application (`NetworkFailure`, `UnauthorizedFailure`, `ValidationFailure`, `ServerFailure`). `core/result/result.dart` rend le succès (`Ok`) ou l’échec (`Err`) visible dans le type de retour.
+- `core/network/error_mapper.dart` est la frontière qui convertit les exceptions Dio en échecs métier, une seule fois, afin que l’interface ne dépende pas des détails HTTP.
+- `core/storage/token_storage.dart` définit le contrat de stockage des jetons et les enregistre avec `flutter_secure_storage`, via le Keystore Android / Keychain iOS.
+- `core/network/auth_interceptor.dart` ajoute le Bearer token, renouvelle les jetons après un 401 et rejoue la requête. `QueuedInterceptor` évite plusieurs renouvellements simultanés qui réutiliseraient le même refresh token. `dio_client.dart` construit le client HTTP commun.
+- `features/auth/domain` contient l’entité `User`, le contrat `AuthRepository` et les cas d’utilisation. Le domaine ne dépend donc ni de Flutter, ni de Dio, ni du format JSON.
+- `features/auth/data` convertit la réponse JSON en modèle, appelle l’API, sauvegarde les jetons, et transforme les erreurs en `Result`. En cas de déconnexion, les jetons locaux sont effacés avant l’appel réseau pour que la sortie de session fonctionne hors ligne.
+- `features/auth/presentation/bloc` reçoit les événements et expose des états d’authentification immuables. Les pages Login/Register valident les formulaires, envoient des événements au BLoC et affichent les erreurs serveur.
+- `core/di/injection.dart` est la racine de composition : elle associe les contrats aux implémentations concrètes sans que les couches créent elles-mêmes leurs dépendances.
+- `core/router/app_router.dart` garde les routes en accord avec l’état Auth. `app.dart` installe le routeur et le thème ; `main.dart` configure l’injection, l’observateur et restaure la session au démarrage.
+
+Pendant une requête `AuthLoading`, le routeur laisse l’utilisateur sur le formulaire afin que son indicateur de chargement reste visible ; seul `AuthInitial` (vérification de session au démarrage) mène à l’écran splash.
+
+Pour la présentation, explique la règle des dépendances vers le domaine : l’interface dépend des cas d’utilisation, qui dépendent des contrats ; la couche data fournit les implémentations. Cela permet de remplacer l’API ou de simuler le dépôt dans les tests sans réécrire l’interface. Les widgets parlent au BLoC par événements et se reconstruisent à partir de ses états.
+
+La page 56 prévoyait temporairement un écran « Signed in » ; le routeur utilise maintenant l’écran Todos final du labo 4. `flutter analyze` et les tests Flutter sont passés, comme détaillé plus bas.
+
+## Labo 4 : fonctionnalité Todos Flutter (pages 62–78)
+
+La fonctionnalité Todo est maintenant raccordée sans modifier le cœur ni le domaine Auth :
+
+- `features/todos/domain` définit l’entité immuable `Todo`, le contrat du dépôt et les cas d’utilisation. `copyWith` crée une nouvelle valeur au lieu de modifier l’entité en place.
+- `features/todos/data` convertit le JSON API en modèle, fournit une source Dio pour lire/créer/modifier/supprimer, et traduit les erreurs avec le `guard` partagé. Le dépôt Todo réutilise ainsi l’intercepteur d’authentification et le stockage de jetons déjà écrits au labo 3.
+- `todo_event.dart`, `todo_state.dart` et `todo_bloc.dart` gèrent chargement, création, bascule de statut, suppression et filtres. Les lectures utilisent `restartable()` pour que le chargement le plus récent gagne ; les écritures sont `sequential()` pour éviter des mutations simultanées incohérentes.
+- La bascule et la suppression sont optimistes : l’interface change immédiatement puis restaure la valeur/l’élément si l’API échoue. L’état conserve les données pendant une erreur et calcule `visibleTodos` et `activeCount` depuis les valeurs de base, ce qui évite les compteurs périmés.
+- `TodoTile` et `AddTodoSheet` sont des widgets de présentation sans dépendance au BLoC. `TodosPage` les relie au BLoC, affiche les filtres, le compte des tâches restantes, les erreurs et le rafraîchissement par glissement.
+- `injection.dart` enregistre les dépendances Todo et fournit une nouvelle instance `TodoBloc` à chaque ouverture de la page. Le routeur crée cette instance et déclenche le chargement initial.
+- `test/features/todos/todo_bloc_test.dart` vérifie les chargements, la création, les bascules optimistes et leur retour arrière, la suppression, les filtres et les valeurs dérivées. Le test d’authentification ajouté au labo 3 couvre également le démarrage, les erreurs de validation, la déconnexion et l’expiration de session.
+
+À présenter : l’optimistic update rend l’action rapide à l’écran, mais garde une stratégie de retour arrière si le serveur refuse l’action. `restartable` est adapté à un rafraîchissement remplaçable ; `sequential` protège l’ordre des modifications. `BlocSelector` et `context.select` limitent les reconstructions aux widgets dont la valeur sélectionnée a changé.
+
+Vérifications effectuées depuis `todo_app` : `flutter analyze` affiche `No issues found!`, `flutter test` passe avec 16 tests et `flutter build web` compile l’application. Le build mentionne une police Cupertino absente ; il ne bloque pas la compilation et l’application n’utilise pas directement d’icônes Cupertino. Les tests BLoC vérifient la logique avec des dépôts simulés. Les tests d’intégration API passent aussi ; l’utilisation interactive sur navigateur, émulateur ou téléphone reste à faire pour voir l’interface et valider le parcours réseau.
+
+Pour essayer l’application dans Chrome avec l’API lancée, depuis `todo_app` :
+
+```bash
+flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:3000/api/v1
+```
+
+Dans l’émulateur Android, l’URL par défaut `http://10.0.2.2:3000/api/v1` désigne l’ordinateur hôte. Un téléphone physique doit recevoir l’adresse IP Wi-Fi de l’ordinateur avec `--dart-define`. Pour le Web, l’API doit autoriser l’origine du navigateur via CORS.
+
+Le manifeste `android/app/src/debug/AndroidManifest.xml` autorise `usesCleartextTraffic` pour les requêtes HTTP locales de développement, conformément à la note du guide. Cette autorisation est absente du manifeste principal ; une version de production doit utiliser HTTPS.
