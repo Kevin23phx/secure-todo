@@ -142,7 +142,7 @@ Le guide sépare deux responsabilités :
 
 Dans `app.ts`, l’ordre des middlewares est important : `helmet` ajoute des en-têtes de sécurité ; `cors` contrôle les origines navigateur autorisées ; `express.json` lit le corps JSON (avec une limite de 100 Ko) ; `pino-http` journalise les requêtes ; viennent ensuite le contrôle `/health` et les routes. Le middleware de route introuvable puis le gestionnaire d’erreurs sont placés à la fin pour traiter les requêtes qui n’ont pas trouvé de route et les erreurs transmises par les étapes précédentes.
 
-Les fichiers `app.ts` et `server.ts` sont présents. Au moment de la vérification, les modules de routes Auth et Todos n’existaient pas encore. Le guide demande donc de laisser leurs imports et leurs `app.use(...)` commentés jusqu’à leur création. Ils ont été commentés dans `app.ts` pour que le serveur puisse démarrer à cette étape ; on réactivera Auth à la fin du labo 1 et Todos au labo 2.
+Les fichiers `app.ts` et `server.ts` sont présents. Les routes Auth sont maintenant branchées dans l’application, comme demandé à la fin du labo 1. Les routes Todos restent désactivées jusqu’au labo 2, car leur module n’existe pas encore.
 
 ### Erreur `npm run dev` lancée depuis la racine
 
@@ -170,4 +170,37 @@ Le premier doit répondre avec un JSON contenant `"status":"ok"` et `uptime`. Le
 
 Pour expliquer ce travail à l’oral : « L’application Express est construite séparément du démarrage pour faciliter les tests. Une requête passe dans les middlewares dans l’ordre ; le parseur JSON doit précéder les routes, et le gestionnaire d’erreurs doit venir en dernier. Le serveur attend la connexion MongoDB avant d’écouter et ferme proprement les connexions à l’arrêt. »
 
-État : les fichiers nécessaires aux pages 10–11 sont présents et les routes encore absentes sont désactivées comme le demande le guide. Le `npm run dev` montré dans l’erreur n’a pas encore été relancé depuis `todo_api` dans cette vérification ; le point de contrôle de la page 12 reste donc à confirmer sur ta machine.
+État : les fichiers nécessaires aux pages 10–11 sont présents. L’erreur `npm run dev` venait du dossier courant et se corrige en lançant npm depuis `todo_api`. Le point de contrôle à l’exécution est à confirmer sur ta machine.
+
+## Labo 1.8 : `src/modules/auth/auth.service.ts`
+
+Le service d’authentification contient la logique métier appelée par les contrôleurs. Le code de la section 1.8 a été ajouté dans ce fichier :
+
+- `register` vérifie si l’adresse e-mail existe, hache le mot de passe avec Argon2id, crée l’utilisateur et renvoie une session.
+- `login` récupère explicitement le champ `passwordHash` (caché par défaut par le modèle), vérifie le mot de passe avec Argon2 et renvoie un message d’authentification générique en cas d’échec, que l’e-mail soit inconnu ou le mot de passe incorrect.
+- `buildSession` renvoie uniquement le DTO public de l’utilisateur et crée un jeton d’accès ainsi qu’un jeton de renouvellement.
+- `refresh` fait tourner le jeton de renouvellement et signe un nouveau jeton d’accès.
+- `logout` révoque la famille du jeton de renouvellement.
+- `getProfile` retrouve l’utilisateur et renvoie son DTO public, sans le hash du mot de passe.
+
+À expliquer à l’oral : un mot de passe n’est jamais stocké en clair ni chiffré de façon réversible ; Argon2id en stocke un hash lent à calculer. Le jeton d’accès sert à authentifier les requêtes et est de courte durée. Le jeton de renouvellement est stocké sous forme de hash et remplacé à chaque utilisation. Le DTO limite les données utilisateur exposées par l’API.
+
+## Vérification du labo : pages 12 à 22
+
+J’ai comparé le code présent aux étapes 1.5–1.9 du PDF. J’ai corrigé les points bloquants repérés : l’application importe maintenant les routes Auth existantes, les routes Todos restent désactivées jusqu’au labo 2, et l’extension Express est déclarée dans le fichier TypeScript attendu. Le fichier `requests.http` des requêtes manuelles a aussi été créé.
+
+| Pages | Élément du labo | État après vérification |
+| --- | --- | --- |
+| 12 | Modèle d’authentification à deux jetons : access court et refresh plus long. | Implémenté par le service des jetons, avec les durées définies dans `.env`. |
+| 13 | Modèle utilisateur, hash masqué par défaut et DTO public. | Implémenté dans `user.model.ts` ; le DTO ne contient pas le hash. |
+| 14 | Modèle de refresh token et schémas d’entrée Zod. | Implémenté dans `refresh-token.model.ts` et `auth.schemas.ts`. |
+| 15–16 | JWT signé/vérifié avec algorithme, émetteur et audience fixés ; refresh token aléatoire stocké sous forme de hash avec expiration et rotation. | Implémenté dans `token.service.ts`. La rotation réclame atomiquement l’ancien jeton et révoque sa famille si un jeton déjà utilisé est rejoué. |
+| 17–18 | Inscription, connexion, hachage Argon2id, renouvellement, déconnexion et profil. | Implémenté dans `auth.service.ts`. La réponse de service expose le DTO et les jetons, pas le hash du mot de passe. |
+| 19 | Middleware Bearer et ajout de `userId` au type Express. | Implémenté dans `shared/authenticate.ts` et `src/types/express.d.ts`. Les déclarations mal nommées trouvées pendant la vérification ont été remplacées par le fichier attendu. |
+| 20 | Contrôleurs HTTP qui valident l’entrée, appellent le service et choisissent le statut/réponse. | Implémenté dans `auth.controller.ts`. |
+| 20–21 | Routes register, login, refresh, logout et me ; limiteur sur register/login ; séparation route/contrôleur/service/modèle. | Implémenté dans `auth.routes.ts` et branché sous `/api/v1/auth` dans `app.ts`. Les routes Todo restent en attente du labo 2. |
+| 22 | Requêtes manuelles Register, Login et Who am I. | Exemples présents dans `todo_api/requests.http`. Les réponses HTTP réelles restent à vérifier en lançant l’API et en envoyant ces requêtes. |
+
+À retenir pour une présentation : les routes choisissent l’URL et les gardes ; les contrôleurs traduisent HTTP en appels métier ; les services appliquent les règles sans dépendre de `req`/`res` ; les modèles accèdent à MongoDB. Le mot de passe est haché avec Argon2id. Le JWT d’accès est signé et vérifié sans requête DB, tandis que le refresh token opaque est stocké sous forme de hash et renouvelé à chaque usage.
+
+Vérification effectuée : `npm run typecheck` dans `todo_api` s’est terminé avec succès (`tsc --noEmit`, code de sortie 0). Cela confirme le contrôle TypeScript, mais ne prouve pas que MongoDB est disponible ni que les requêtes HTTP du point de contrôle fonctionnent. Il reste à lancer `npm run dev`, puis à envoyer les requêtes de `requests.http` et vérifier les statuts attendus : inscription 201, e-mail en doublon 409, entrée invalide 422, `/me` sans jeton 401 et avec jeton valide 200.

@@ -3,10 +3,7 @@ import express from 'express';
 import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
 import { env } from './config/env.ts';
-// These route modules are added later in the lab. Uncomment their imports and
-// app.use registrations when the corresponding modules exist.
-// import { authRoutes } from './modules/auth/auth.routes.ts';
-// import { todoRoutes } from './modules/todos/todo.routes.ts';
+import { authRoutes } from './modules/auth/auth.routes.ts';
 import { errorHandler, notFoundHandler } from './shared/error-handler.ts';
 import { logger } from './shared/logger.ts';
 
@@ -26,9 +23,8 @@ export function createApp() {
     app.get('/health', (_req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
     });
-    // Uncomment auth at the end of Lab 1 and todos in Lab 2.
-    // app.use('/api/v1/auth', authRoutes);
-    // app.use('/api/v1/todos', todoRoutes);
+    app.use('/api/v1/auth', authRoutes);
+    // Todo routes are added in Lab 2; enable them after their module exists.
 
     // --- Must be registered last ---
     app.use(notFoundHandler);
